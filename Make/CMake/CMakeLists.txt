@@ -450,6 +450,7 @@ include("../CMake/Debugging.cmake")
 include("../CMake/Framework.cmake")
 include("../CMake/OptionsAndSkills.cmake")
 include("../CMake/B-Human.cmake")
+include("../CMake/MujocoReplay.cmake")
 
 if(BUILD_DESKTOP)
   include("../CMake/Python.cmake")
