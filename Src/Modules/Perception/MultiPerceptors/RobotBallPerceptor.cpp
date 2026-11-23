@@ -17,6 +17,9 @@
 #include <string>
 #include <array>
 #include <cmath>
+#include <cstdlib>
+#include <fstream>
+#include <chrono>
 
 MAKE_MODULE(RobotBallPerceptor);
 
@@ -295,11 +298,52 @@ void RobotBallPerceptor::processFrameOnce()
 
   lastProcessedTimestamp = theCameraImage.timestamp;
 
+  const auto replayStart = std::chrono::steady_clock::now();
   usefulPredicts.clear();
 
   STOPWATCH("module:RobotBallPerceptor:preProcess") preProcess();
   STOPWATCH("module:RobotBallPerceptor:apply") compiled.apply();
+  // FNV-1a over the exact float buffers permits deterministic replay checks.
+  const auto replayHash = [](const float* values, size_t count)
+  {
+    uint64_t hash = 14695981039346656037ull;
+    const auto* bytes = reinterpret_cast<const unsigned char*>(values);
+    for(size_t i = 0; i < count * sizeof(float); ++i)
+      hash = (hash ^ bytes[i]) * 1099511628211ull;
+    return hash;
+  };
+  uint64_t inputHash = 0, rawOutputHash = 0;
+  if(std::getenv("BHUMAN_REPLAY_CANDIDATES"))
+  {
+    auto input = compiled.input(0);
+    auto raw = compiled.output(0);
+    inputHash = replayHash(input.data(), input.dims(0) * input.dims(1) * input.dims(2));
+    rawOutputHash = replayHash(raw.data(), raw.dims(0) * raw.dims(1));
+  }
+
   STOPWATCH("module:RobotBallPerceptor:extractPredictions") extractPredictions(boxConfidenceThreshold, iouThreshold);
+
+  // Optional replay evidence, before size/body/field gates. Disabled in normal runs.
+  if(const char* replayOutput = std::getenv("BHUMAN_REPLAY_CANDIDATES"))
+  {
+    std::ofstream out(replayOutput, std::ios::app);
+    out << "{\"timestamp_ms\":" << theCameraImage.timestamp
+        << ",\"latency_ms\":" << std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - replayStart).count()
+        << ",\"input_tensor_fnv1a64\":\"" << inputHash << "\""
+        << ",\"raw_output_fnv1a64\":\"" << rawOutputHash << "\""
+        << ",\"candidates\":[";
+    bool first = true;
+    for(const Prediction& prediction : usefulPredicts)
+    {
+      if(!first) out << ",";
+      first = false;
+      out << "{\"class_id\":" << static_cast<int>(prediction.type)
+          << ",\"confidence\":" << prediction.probability
+          << ",\"bbox\":[" << prediction.topLeft.x() << "," << prediction.topLeft.y()
+          << "," << prediction.bottomRight.x() << "," << prediction.bottomRight.y() << "]}";
+    }
+    out << "]}\n";
+  }
 
   COMPLEX_DRAWING("module:RobotBallPerceptor:box")
   {
